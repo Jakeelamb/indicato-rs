@@ -21,7 +21,7 @@ rolling-state implementations for:
 
 The public API, `Option<f64>` warmup representation, fixture harness, candle
 pattern exactness choices, and package documentation remain owned by
-`indicato-rs`.
+`ta-indicators`.
 
 ## BSD-3-Clause
 

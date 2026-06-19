@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate deterministic TA-Lib parity fixtures for `indicato-rs`.
+"""Generate deterministic TA-Lib parity fixtures for `ta-indicators`.
 
 This is the ground-truth contract for the Rust TA-Lib port. It builds a fixed
 synthetic OHLCV series (seeded, reproducible) and records reference outputs from
@@ -199,7 +199,7 @@ def main() -> None:
             "seed": SEED,
             "n": N,
             "talib_version": talib.__version__,
-            "description": "Deterministic TA-Lib parity reference for indicato-rs.",
+            "description": "Deterministic TA-Lib parity reference for ta-indicators.",
         },
         "input": {key: clean(value) for key, value in s.items()},
         "expected": expected,

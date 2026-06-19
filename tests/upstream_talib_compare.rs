@@ -1,7 +1,7 @@
-use indicato_rs as ours;
 use serde_json::Value;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
+use ta_indicators as ours;
 use talib_rs as upstream;
 use upstream::MaType;
 

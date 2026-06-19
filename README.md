@@ -1,4 +1,4 @@
-# indicato-rs
+# ta-indicators
 
 Warmup-exact Rust port of [TA-Lib](https://ta-lib.org/) batch indicators. Outputs use
 `Option<f64>` with `None` on warmup bars, matching TA-Lib's emitted-value semantics bar
@@ -7,25 +7,25 @@ for bar (not just post-warmup tails).
 Designed as a standalone library: zero runtime dependencies, deterministic parity tests
 against committed TA-Lib reference fixtures.
 
-The crates.io package is `indicato-rs`; the Rust library import name is `indicato_rs`.
+The crates.io package is `ta-indicators`; the Rust library import name is `ta_indicators`.
 
 ## Status
 
-- Publish target: crates.io package `indicato-rs`, Rust crate import `indicato_rs`.
+- Publish target: crates.io package `ta-indicators`, Rust crate import `ta_indicators`.
 - Runtime dependencies: none.
 - License: MIT plus BSD-3-Clause notice for adapted rolling-window techniques.
 - Parity gate: 121 checked-in TA-Lib reference series.
-- Package dry run: 15 files, about 252 KiB compressed.
+- Package dry run: 15 files, about 254 KiB compressed.
 
 ## Install
 
 ```toml
 [dependencies]
-indicato-rs = "0.1"
+ta-indicators = "0.1"
 ```
 
 ```rust
-use indicato_rs::{cdl_engulfing, ht_dcperiod, macd, rsi};
+use ta_indicators::{cdl_engulfing, ht_dcperiod, macd, rsi};
 
 let rsi_14 = rsi(&closes, 14);
 let macd_out = macd(&closes, 12, 26, 9);
@@ -99,8 +99,8 @@ cargo test --release --test upstream_talib_compare \
 ## Performance
 
 The release perf probe expands the parity fixture to 409,600 bars and compares
-`indicato-rs` against `talib-rs 0.1.2` with default features disabled. Ratio is
-`upstream / indicato-rs`, so values above `1.0x` mean this crate is faster.
+`ta-indicators` against `talib-rs 0.1.2` with default features disabled. Ratio is
+`upstream / ta-indicators`, so values above `1.0x` mean this crate is faster.
 Numbers below are from the publication-prep run on the local release build.
 
 | Case | Ratio |

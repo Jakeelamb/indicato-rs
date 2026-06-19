@@ -5,7 +5,7 @@
 //! # Example
 //!
 //! ```
-//! use indicato_rs::{bollinger_bands, macd, rsi};
+//! use ta_indicators::{bollinger_bands, macd, rsi};
 //!
 //! let closes = [100.0, 101.0, 102.0, 101.5, 103.0, 104.0, 103.5, 105.0];
 //! let rsi_3 = rsi(&closes, 3);

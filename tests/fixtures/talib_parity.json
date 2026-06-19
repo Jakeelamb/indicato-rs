@@ -3,7 +3,7 @@
   "seed": 20260603,
   "n": 400,
   "talib_version": "0.6.8",
-  "description": "Deterministic TA-Lib parity reference for indicato-rs."
+  "description": "Deterministic TA-Lib parity reference for ta-indicators."
  },
  "input": {
   "open": [
