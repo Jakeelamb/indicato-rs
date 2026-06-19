@@ -6,8 +6,8 @@
 //! warmup-exact policy: the Rust output must match TA-Lib on every bar where
 //! TA-Lib emitted a value.
 
+use indicato_rs as ta;
 use serde_json::Value;
-use talib_rs as ta;
 
 const REL_TOL: f64 = 1e-6;
 const ABS_TOL: f64 = 1e-6;

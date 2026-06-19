@@ -1,9 +1,28 @@
 //! Warmup-exact batch port of TA-Lib technical indicators for Rust.
 //!
 //! See crate README for module layout (`lib.rs` vs `candles.rs`) and parity policy.
+//!
+//! # Example
+//!
+//! ```
+//! use indicato_rs::{bollinger_bands, macd, rsi};
+//!
+//! let closes = [100.0, 101.0, 102.0, 101.5, 103.0, 104.0, 103.5, 105.0];
+//! let rsi_3 = rsi(&closes, 3);
+//! let macd_out = macd(&closes, 3, 6, 3);
+//! let bands = bollinger_bands(&closes, 3, 2.0);
+//!
+//! assert_eq!(rsi_3.len(), closes.len());
+//! assert_eq!(macd_out.macd.len(), closes.len());
+//! assert_eq!(bands.middle.len(), closes.len());
+//! ```
+//!
+//! Outputs use `Option<f64>` for numeric indicators. Warmup bars are `None`;
+//! emitted bars are matched against committed TA-Lib reference fixtures.
 
 mod candles;
 pub use candles::*;
+use std::collections::VecDeque;
 
 #[derive(Debug, Clone)]
 pub struct Macd {
@@ -220,10 +239,13 @@ fn sma_options(series: &[Option<f64>], period: usize) -> Vec<Option<f64>> {
     }
     for idx in period - 1..series.len() {
         let window = &series[idx + 1 - period..=idx];
-        if window.iter().all(Option::is_some) {
-            let sum: f64 = window.iter().map(|value| value.unwrap()).sum();
-            out[idx] = Some(sum / period as f64);
-        }
+        let Some(sum) = window
+            .iter()
+            .try_fold(0.0, |sum, value| value.map(|value| sum + value))
+        else {
+            continue;
+        };
+        out[idx] = Some(sum / period as f64);
     }
     out
 }
@@ -275,6 +297,25 @@ pub fn mavp(
     if max_period == 0 || max_period < min_period {
         return out;
     }
+    if values[..len].iter().all(|value| value.is_finite()) {
+        let mut sums = vec![0.0; len + 1];
+        for (idx, value) in values.iter().take(len).enumerate() {
+            sums[idx + 1] = sums[idx] + value;
+        }
+        for idx in (max_period - 1)..len {
+            let raw = periods[idx];
+            if !raw.is_finite() || raw < 0.0 {
+                continue;
+            }
+            let period = (raw as usize).clamp(min_period, max_period);
+            if period == 0 {
+                continue;
+            }
+            let start = idx + 1 - period;
+            out[idx] = Some((sums[idx + 1] - sums[start]) / period as f64);
+        }
+        return out;
+    }
     for idx in (max_period - 1)..len {
         let raw = periods[idx];
         if !raw.is_finite() || raw < 0.0 {
@@ -304,6 +345,46 @@ pub fn beta(real0: &[f64], real1: &[f64], period: usize) -> Vec<Option<f64>> {
         return out;
     }
     let n = period as f64;
+    if real0[..len].iter().all(|value| value.is_finite())
+        && real1[..len].iter().all(|value| value.is_finite())
+        && real0[..len - 1].iter().all(|value| *value != 0.0)
+        && real1[..len - 1].iter().all(|value| *value != 0.0)
+    {
+        // Sliding return sums adapted from talib-rs 0.1.2 (BSD-3-Clause);
+        // see THIRD_PARTY_NOTICES.md.
+        let mut sx = 0.0;
+        let mut sy = 0.0;
+        let mut sxx = 0.0;
+        let mut sxy = 0.0;
+        let ret = |values: &[f64], idx: usize| (values[idx] - values[idx - 1]) / values[idx - 1];
+        for idx in 1..=period {
+            let x = ret(real0, idx);
+            let y = ret(real1, idx);
+            sx += x;
+            sy += y;
+            sxx += x * x;
+            sxy += x * y;
+        }
+        let emit = |slot: &mut Option<f64>, sx: f64, sy: f64, sxx: f64, sxy: f64| {
+            let denom = n * sxx - sx * sx;
+            if denom != 0.0 {
+                *slot = finite((n * sxy - sx * sy) / denom);
+            }
+        };
+        emit(&mut out[period], sx, sy, sxx, sxy);
+        for (idx, slot) in out.iter_mut().enumerate().take(len).skip(period + 1) {
+            let old_x = ret(real0, idx - period);
+            let old_y = ret(real1, idx - period);
+            let new_x = ret(real0, idx);
+            let new_y = ret(real1, idx);
+            sx += new_x - old_x;
+            sy += new_y - old_y;
+            sxx += new_x * new_x - old_x * old_x;
+            sxy += new_x * new_y - old_x * old_y;
+            emit(slot, sx, sy, sxx, sxy);
+        }
+        return out;
+    }
     for (t, slot) in out.iter_mut().enumerate().take(len).skip(period) {
         let (mut sx, mut sy, mut sxx, mut sxy) = (0.0, 0.0, 0.0, 0.0);
         let mut ok = true;
@@ -347,7 +428,53 @@ pub fn correl(real0: &[f64], real1: &[f64], period: usize) -> Vec<Option<f64>> {
     if period == 0 {
         return out;
     }
+    if period > len {
+        return out;
+    }
     let n = period as f64;
+    if real0[..len].iter().all(|value| value.is_finite())
+        && real1[..len].iter().all(|value| value.is_finite())
+    {
+        // Sliding-window update adapted from talib-rs 0.1.2 (BSD-3-Clause);
+        // see THIRD_PARTY_NOTICES.md.
+        let mut sx = 0.0;
+        let mut sy = 0.0;
+        let mut sxx = 0.0;
+        let mut syy = 0.0;
+        let mut sxy = 0.0;
+        for idx in 0..period {
+            let x = real0[idx];
+            let y = real1[idx];
+            sx += x;
+            sy += y;
+            sxx += x * x;
+            syy += y * y;
+            sxy += x * y;
+        }
+        let emit = |slot: &mut Option<f64>, sx: f64, sy: f64, sxx: f64, syy: f64, sxy: f64| {
+            let numerator = n * sxy - sx * sy;
+            let denominator = ((n * sxx - sx * sx) * (n * syy - sy * sy)).sqrt();
+            *slot = if denominator > 0.0 {
+                finite(numerator / denominator)
+            } else {
+                Some(0.0)
+            };
+        };
+        emit(&mut out[period - 1], sx, sy, sxx, syy, sxy);
+        for idx in period..len {
+            let old_x = real0[idx - period];
+            let old_y = real1[idx - period];
+            let new_x = real0[idx];
+            let new_y = real1[idx];
+            sx += new_x - old_x;
+            sy += new_y - old_y;
+            sxx += new_x * new_x - old_x * old_x;
+            syy += new_y * new_y - old_y * old_y;
+            sxy += new_x * new_y - old_x * old_y;
+            emit(&mut out[idx], sx, sy, sxx, syy, sxy);
+        }
+        return out;
+    }
     for (t, slot) in out.iter_mut().enumerate().take(len).skip(period - 1) {
         let (mut sx, mut sy, mut sxx, mut syy, mut sxy) = (0.0, 0.0, 0.0, 0.0, 0.0);
         let mut ok = true;
@@ -442,24 +569,45 @@ pub fn stochrsi(values: &[f64], rsi_period: usize, k_period: usize, d_period: us
     let rsi = rsi(values, rsi_period);
     let mut k = vec![None; values.len()];
     if k_period > 0 {
-        for idx in k_period - 1..rsi.len() {
-            let start = idx + 1 - k_period;
-            let mut low = f64::INFINITY;
-            let mut high = f64::NEG_INFINITY;
-            let mut valid = true;
-            for value in &rsi[start..=idx] {
-                let Some(value) = value else {
-                    valid = false;
-                    break;
-                };
-                low = low.min(*value);
-                high = high.max(*value);
+        let mut valid_count = 0usize;
+        let mut lows: VecDeque<(usize, f64)> = VecDeque::new();
+        let mut highs: VecDeque<(usize, f64)> = VecDeque::new();
+        for idx in 0..rsi.len() {
+            if let Some(value) = rsi[idx] {
+                valid_count += 1;
+                while lows.back().is_some_and(|(_, prior)| *prior >= value) {
+                    lows.pop_back();
+                }
+                lows.push_back((idx, value));
+                while highs.back().is_some_and(|(_, prior)| *prior <= value) {
+                    highs.pop_back();
+                }
+                highs.push_back((idx, value));
             }
-            if valid
-                && (high - low).abs() > f64::EPSILON
-                && let Some(current) = rsi[idx]
+            if idx >= k_period {
+                let expired = idx - k_period;
+                if rsi[expired].is_some() {
+                    valid_count -= 1;
+                }
+                while lows.front().is_some_and(|(low_idx, _)| *low_idx <= expired) {
+                    lows.pop_front();
+                }
+                while highs
+                    .front()
+                    .is_some_and(|(high_idx, _)| *high_idx <= expired)
+                {
+                    highs.pop_front();
+                }
+            }
+            if idx + 1 >= k_period
+                && valid_count == k_period
+                && let (Some((_, low)), Some((_, high)), Some(current)) =
+                    (lows.front(), highs.front(), rsi[idx])
             {
-                k[idx] = Some((current - low) / (high - low) * 100.0);
+                let range = high - low;
+                if range.abs() > f64::EPSILON {
+                    k[idx] = Some((current - low) / range * 100.0);
+                }
             }
         }
     }
@@ -472,18 +620,20 @@ fn option_mean(values: &[Option<f64>], period: usize) -> Vec<Option<f64>> {
     if period == 0 {
         return out;
     }
-    for idx in period - 1..values.len() {
-        let start = idx + 1 - period;
-        let mut sum = 0.0;
-        let mut valid = true;
-        for value in &values[start..=idx] {
-            let Some(value) = value else {
-                valid = false;
-                break;
-            };
+    let mut sum = 0.0;
+    let mut valid_count = 0usize;
+    for idx in 0..values.len() {
+        if let Some(value) = values[idx] {
             sum += value;
+            valid_count += 1;
         }
-        if valid {
+        if idx >= period
+            && let Some(value) = values[idx - period]
+        {
+            sum -= value;
+            valid_count -= 1;
+        }
+        if idx + 1 >= period && valid_count == period {
             out[idx] = Some(sum / period as f64);
         }
     }
@@ -499,6 +649,32 @@ pub fn kama(values: &[f64], period: usize) -> Vec<Option<f64>> {
     let slow_sc = 2.0 / (30.0 + 1.0);
     // TA-Lib seeds the running KAMA with the prior close (`values[period - 1]`)
     // and applies a full smoothing step on the first emitted bar.
+    if values.iter().all(|value| value.is_finite()) {
+        // Rolling volatility update adapted from talib-rs 0.1.2
+        // (BSD-3-Clause); see THIRD_PARTY_NOTICES.md.
+        let mut current = values[period - 1];
+        let mut volatility = 0.0;
+        for idx in 1..=period {
+            volatility += (values[idx] - values[idx - 1]).abs();
+        }
+        for idx in period..values.len() {
+            if idx > period {
+                volatility += (values[idx] - values[idx - 1]).abs()
+                    - (values[idx - period] - values[idx - period - 1]).abs();
+            }
+            let change = (values[idx] - values[idx - period]).abs();
+            let er = if volatility > f64::EPSILON {
+                change / volatility
+            } else {
+                0.0
+            };
+            let smoothing_base = er * (fast_sc - slow_sc) + slow_sc;
+            let smoothing = smoothing_base * smoothing_base;
+            current += smoothing * (values[idx] - current);
+            out[idx] = Some(current);
+        }
+        return out;
+    }
     let mut current = finite(values[period - 1]);
     for idx in period..values.len() {
         let Some(price) = finite(values[idx]) else {
@@ -526,7 +702,8 @@ pub fn kama(values: &[f64], period: usize) -> Vec<Option<f64>> {
         } else {
             0.0
         };
-        let smoothing = (er * (fast_sc - slow_sc) + slow_sc).powi(2);
+        let smoothing_base = er * (fast_sc - slow_sc) + slow_sc;
+        let smoothing = smoothing_base * smoothing_base;
         let next = if let Some(prev) = current {
             prev + smoothing * (price - prev)
         } else {
@@ -543,6 +720,43 @@ pub fn bollinger_bands(values: &[f64], period: usize, deviations: f64) -> Bollin
     let mut middle = vec![None; values.len()];
     let mut lower = vec![None; values.len()];
     if period == 0 {
+        return BollingerBands {
+            upper,
+            middle,
+            lower,
+        };
+    }
+    if period <= values.len() && values.iter().all(|value| value.is_finite()) {
+        // Sliding-window update adapted from talib-rs 0.1.2 (BSD-3-Clause);
+        // see THIRD_PARTY_NOTICES.md.
+        let inv_period = 1.0 / period as f64;
+        let mut sum = 0.0;
+        let mut sum_sq = 0.0;
+        for value in values.iter().take(period) {
+            sum += *value;
+            sum_sq += value * value;
+        }
+        let emit = |idx: usize,
+                    sum: f64,
+                    sum_sq: f64,
+                    middle: &mut [Option<f64>],
+                    upper: &mut [Option<f64>],
+                    lower: &mut [Option<f64>]| {
+            let mean = sum * inv_period;
+            let variance = (sum_sq * inv_period - mean * mean).max(0.0);
+            let std = variance.sqrt();
+            middle[idx] = Some(mean);
+            upper[idx] = Some(mean + deviations * std);
+            lower[idx] = Some(mean - deviations * std);
+        };
+        emit(period - 1, sum, sum_sq, &mut middle, &mut upper, &mut lower);
+        for idx in period..values.len() {
+            let old = values[idx - period];
+            let new = values[idx];
+            sum += new - old;
+            sum_sq += new * new - old * old;
+            emit(idx, sum, sum_sq, &mut middle, &mut upper, &mut lower);
+        }
         return BollingerBands {
             upper,
             middle,
@@ -642,6 +856,62 @@ pub fn ultosc(
     let len = highs.len().min(lows.len()).min(closes.len());
     let mut out = vec![None; len];
     if short == 0 || medium == 0 || long == 0 || len <= long {
+        return out;
+    }
+    if short <= long
+        && medium <= long
+        && highs[..len].iter().all(|value| value.is_finite())
+        && lows[..len].iter().all(|value| value.is_finite())
+        && closes[..len].iter().all(|value| value.is_finite())
+    {
+        // Rolling BP/TR sums adapted from talib-rs 0.1.2 (BSD-3-Clause);
+        // see THIRD_PARTY_NOTICES.md.
+        let mut buying_pressure = vec![0.0; len];
+        let mut true_range = vec![0.0; len];
+        for idx in 1..len {
+            let prev_close = closes[idx - 1];
+            let true_low = lows[idx].min(prev_close);
+            buying_pressure[idx] = closes[idx] - true_low;
+            true_range[idx] = highs[idx].max(prev_close) - true_low;
+        }
+        let mut short_bp: f64 = buying_pressure[(long + 1 - short)..=long].iter().sum();
+        let mut short_tr: f64 = true_range[(long + 1 - short)..=long].iter().sum();
+        let mut medium_bp: f64 = buying_pressure[(long + 1 - medium)..=long].iter().sum();
+        let mut medium_tr: f64 = true_range[(long + 1 - medium)..=long].iter().sum();
+        let mut long_bp: f64 = buying_pressure[1..=long].iter().sum();
+        let mut long_tr: f64 = true_range[1..=long].iter().sum();
+        let emit = |idx: usize,
+                    short_bp: f64,
+                    short_tr: f64,
+                    medium_bp: f64,
+                    medium_tr: f64,
+                    long_bp: f64,
+                    long_tr: f64,
+                    out: &mut [Option<f64>]| {
+            if short_tr.abs() > f64::EPSILON
+                && medium_tr.abs() > f64::EPSILON
+                && long_tr.abs() > f64::EPSILON
+            {
+                let short_avg = short_bp / short_tr;
+                let medium_avg = medium_bp / medium_tr;
+                let long_avg = long_bp / long_tr;
+                out[idx] = Some(100.0 * (4.0 * short_avg + 2.0 * medium_avg + long_avg) / 7.0);
+            }
+        };
+        emit(
+            long, short_bp, short_tr, medium_bp, medium_tr, long_bp, long_tr, &mut out,
+        );
+        for idx in (long + 1)..len {
+            short_bp += buying_pressure[idx] - buying_pressure[idx - short];
+            short_tr += true_range[idx] - true_range[idx - short];
+            medium_bp += buying_pressure[idx] - buying_pressure[idx - medium];
+            medium_tr += true_range[idx] - true_range[idx - medium];
+            long_bp += buying_pressure[idx] - buying_pressure[idx - long];
+            long_tr += true_range[idx] - true_range[idx - long];
+            emit(
+                idx, short_bp, short_tr, medium_bp, medium_tr, long_bp, long_tr, &mut out,
+            );
+        }
         return out;
     }
     let mut buying_pressure = vec![0.0; len];
@@ -870,6 +1140,54 @@ pub fn linear_regression(values: &[f64], period: usize) -> LinearRegression {
             tsf,
         };
     }
+    if period <= values.len() && values.iter().all(|value| value.is_finite()) {
+        // Sliding weighted-sum update adapted from talib-rs 0.1.2
+        // (BSD-3-Clause); see THIRD_PARTY_NOTICES.md.
+        let n = period as f64;
+        let sum_x = n * (n - 1.0) * 0.5;
+        let sum_x2 = n * (n - 1.0) * (2.0 * n - 1.0) / 6.0;
+        let denom = n * sum_x2 - sum_x * sum_x;
+        if denom <= f64::EPSILON {
+            return LinearRegression {
+                line,
+                slope: slope_out,
+                angle,
+                intercept: intercept_out,
+                tsf,
+            };
+        }
+
+        let mut sum_y = 0.0;
+        let mut weighted_sum = 0.0;
+        for (offset, value) in values.iter().take(period).enumerate() {
+            sum_y += *value;
+            weighted_sum += offset as f64 * *value;
+        }
+        let mut emit = |idx: usize, sum_y: f64, weighted_sum: f64| {
+            let slope = (n * weighted_sum - sum_x * sum_y) / denom;
+            let intercept = (sum_y - slope * sum_x) / n;
+            slope_out[idx] = Some(slope);
+            angle[idx] = Some(slope.atan().to_degrees());
+            intercept_out[idx] = Some(intercept);
+            line[idx] = Some(intercept + slope * (period - 1) as f64);
+            tsf[idx] = Some(intercept + slope * period as f64);
+        };
+        emit(period - 1, sum_y, weighted_sum);
+        for idx in period..values.len() {
+            let old = values[idx - period];
+            let new = values[idx];
+            weighted_sum = weighted_sum - sum_y + old + (n - 1.0) * new;
+            sum_y += new - old;
+            emit(idx, sum_y, weighted_sum);
+        }
+        return LinearRegression {
+            line,
+            slope: slope_out,
+            angle,
+            intercept: intercept_out,
+            tsf,
+        };
+    }
     for idx in period - 1..values.len() {
         let start = idx + 1 - period;
         let mut y_sum = 0.0;
@@ -1081,7 +1399,22 @@ pub fn adosc(
     fast: usize,
     slow: usize,
 ) -> Vec<Option<f64>> {
-    let ad_line = option_values(&ad(highs, lows, closes, volumes));
+    let mut ad_line = vec![0.0; closes.len()];
+    let mut current = 0.0;
+    for idx in 0..closes.len() {
+        let high = highs[idx];
+        let low = lows[idx];
+        let close = closes[idx];
+        let volume = volumes[idx];
+        let range = high - low;
+        if range.is_finite() && range.abs() > f64::EPSILON && volume.is_finite() {
+            let multiplier = ((close - low) - (high - close)) / range;
+            if multiplier.is_finite() {
+                current += multiplier * volume;
+            }
+        }
+        ad_line[idx] = current;
+    }
     let len = ad_line.len();
     let mut out = vec![None; len];
     if fast == 0 || slow == 0 || len == 0 {
@@ -1212,6 +1545,88 @@ pub fn aroon(highs: &[f64], lows: &[f64], period: usize) -> Aroon {
     let mut down = vec![None; len];
     let mut oscillator = vec![None; len];
     if period == 0 {
+        return Aroon {
+            up,
+            down,
+            oscillator,
+        };
+    }
+    if period < len
+        && highs[..len].iter().all(|value| value.is_finite())
+        && lows[..len].iter().all(|value| value.is_finite())
+    {
+        // Rolling extremum index update adapted from talib-rs 0.1.2
+        // (BSD-3-Clause); see THIRD_PARTY_NOTICES.md.
+        let scale = 100.0 / period as f64;
+        let window = period + 1;
+        let mut high_value = highs[0];
+        let mut high_idx = 0usize;
+        let mut low_value = lows[0];
+        let mut low_idx = 0usize;
+        for idx in 1..window {
+            if highs[idx] >= high_value {
+                high_value = highs[idx];
+                high_idx = idx;
+            }
+            if lows[idx] <= low_value {
+                low_value = lows[idx];
+                low_idx = idx;
+            }
+        }
+        let emit = |idx: usize,
+                    high_idx: usize,
+                    low_idx: usize,
+                    up: &mut [Option<f64>],
+                    down: &mut [Option<f64>],
+                    oscillator: &mut [Option<f64>]| {
+            let up_value = (period - (idx - high_idx)) as f64 * scale;
+            let down_value = (period - (idx - low_idx)) as f64 * scale;
+            up[idx] = Some(up_value);
+            down[idx] = Some(down_value);
+            oscillator[idx] = Some(up_value - down_value);
+        };
+        emit(
+            period,
+            high_idx,
+            low_idx,
+            &mut up,
+            &mut down,
+            &mut oscillator,
+        );
+
+        let mut trailing_idx = 1usize;
+        for idx in (period + 1)..len {
+            if high_idx < trailing_idx {
+                high_idx = trailing_idx;
+                high_value = highs[trailing_idx];
+                for (offset, value) in highs[trailing_idx + 1..=idx].iter().enumerate() {
+                    if *value >= high_value {
+                        high_value = *value;
+                        high_idx = trailing_idx + 1 + offset;
+                    }
+                }
+            } else if highs[idx] >= high_value {
+                high_value = highs[idx];
+                high_idx = idx;
+            }
+
+            if low_idx < trailing_idx {
+                low_idx = trailing_idx;
+                low_value = lows[trailing_idx];
+                for (offset, value) in lows[trailing_idx + 1..=idx].iter().enumerate() {
+                    if *value <= low_value {
+                        low_value = *value;
+                        low_idx = trailing_idx + 1 + offset;
+                    }
+                }
+            } else if lows[idx] <= low_value {
+                low_value = lows[idx];
+                low_idx = idx;
+            }
+
+            emit(idx, high_idx, low_idx, &mut up, &mut down, &mut oscillator);
+            trailing_idx += 1;
+        }
         return Aroon {
             up,
             down,
@@ -1424,7 +1839,7 @@ fn ht32(close: &[f64], fast_limit: f64, slow_limit: f64) -> Ht32 {
         let i1;
         let q2;
         let i2;
-        if today.is_multiple_of(2) {
+        if today % 2 == 0 {
             let det = detrender.transform(smoothed, adjusted_prev_period, hilbert_idx, true);
             let q1n = q1c.transform(det, adjusted_prev_period, hilbert_idx, true);
             let jin = jic.transform(i1_even_prev3, adjusted_prev_period, hilbert_idx, true);
@@ -1605,7 +2020,7 @@ fn ht63(close: &[f64]) -> Ht63 {
 
         let q2;
         let i2;
-        if today.is_multiple_of(2) {
+        if today % 2 == 0 {
             let det = detrender.transform(smoothed, adjusted_prev_period, hilbert_idx, true);
             let q1n = q1c.transform(det, adjusted_prev_period, hilbert_idx, true);
             let jin = jic.transform(i1_even_prev3, adjusted_prev_period, hilbert_idx, true);
