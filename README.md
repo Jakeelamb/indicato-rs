@@ -4,6 +4,10 @@ Warmup-exact Rust port of [TA-Lib](https://ta-lib.org/) batch indicators. Output
 `Option<f64>` with `None` on warmup bars, matching TA-Lib's emitted-value semantics bar
 for bar (not just post-warmup tails).
 
+The crate also includes a separate `ta_indicators::tradingview` module for
+TradingView CSV-validated indicator families. Those are not TA-Lib functions;
+their reference oracle is committed TradingView chart-export CSVs.
+
 Designed as a standalone library: zero runtime dependencies, deterministic parity tests
 against committed TA-Lib reference fixtures.
 
@@ -14,8 +18,9 @@ The crates.io package is `ta-indicators`; the Rust library import name is `ta_in
 - Publish target: crates.io package `ta-indicators`, Rust crate import `ta_indicators`.
 - Runtime dependencies: none.
 - License: MIT plus BSD-3-Clause notice for adapted rolling-window techniques.
-- Parity gate: 121 checked-in TA-Lib reference series.
-- Package dry run: 15 files, about 254 KiB compressed.
+- Parity gate: 121 checked-in TA-Lib reference series plus 11 TradingView CSV
+  golden families.
+- Package dry run: 34 files, about 333 KiB compressed.
 
 ## Install
 
@@ -26,20 +31,26 @@ ta-indicators = "0.1"
 
 ```rust
 use ta_indicators::{cdl_engulfing, ht_dcperiod, macd, rsi};
+use ta_indicators::tradingview::{Candle, validated::heikin_ashi_transform};
 
 let rsi_14 = rsi(&closes, 14);
 let macd_out = macd(&closes, 12, 26, 9);
 let patterns = cdl_engulfing(&opens, &highs, &lows, &closes);
 let dominant_cycle = ht_dcperiod(&closes);
+
+let candles = vec![Candle::new(100.0, 101.0, 99.0, 100.5, 10_000.0)];
+let heikin_ashi = heikin_ashi_transform(&candles);
 ```
 
 ## Layout
 
 ```
-src/lib.rs       Overlap, momentum, volatility, volume, stats, Hilbert transforms
-src/candles.rs   Shared candle-settings framework + 61 CDL pattern functions
-tests/           Warmup-exact parity harness (121 fixture keys, two test files)
-scripts/         Fixture regeneration via Python TA-Lib (dev-only)
+src/lib.rs              Overlap, momentum, volatility, volume, stats, Hilbert transforms
+src/candles.rs          Shared candle-settings framework + 61 CDL pattern functions
+src/tradingview.rs      TradingView CSV-validated OHLCV indicator families
+src/tradingview/        Private TradingView implementation modules
+tests/                  TA-Lib and TradingView parity harnesses
+scripts/                Fixture regeneration via Python TA-Lib (dev-only)
 ```
 
 ### `src/lib.rs`
@@ -60,22 +71,45 @@ TA-Lib-compatible candle pattern recognition:
 - `Candles` — OHLCV wrapper with `real_body`, shadows, `color`, `range`, `average`.
 - `cdl_*` — 61 pattern detectors returning `Vec<i32>` (`0`, `±100`, `±200`).
 
+### `src/tradingview.rs`
+
+Namespaced TradingView-backed formulas. Public use should go through
+`ta_indicators::tradingview::validated`, which currently exposes:
+
+- `volume_liquidity_sweep`
+- `volumetric_trend_ribbon`
+- `momentum_vol_composite`
+- `adaptive_baseline`
+- `self_strength_oscillator`
+- `mariashi_renko_system`
+- `anchored_vwap`
+- `wyckoff_phase`
+- `darvas_turtle_breakout`
+- `ichimoku_cloud_state`
+- `heikin_ashi_transform`
+
+These functions return one row per input candle. Multi-column families return
+small point structs in `Vec<Option<_>>`; warmup or unavailable rows are `None`.
+
 ## Validation
 
 | File | Keys | Lookback groups |
 | --- | ---: | --- |
 | `tests/talib_parity.rs` | 111 | Momentum, overlap, stats, SAR, CDL, … |
 | `tests/talib_parity_ht.rs` | 10 | Hilbert / MAMA family |
+| `tests/tradingview_golden.rs` | 11 | TradingView CSV-exported indicator families |
 
 Policy: **warmup-exact** — Rust must match TA-Lib wherever the fixture has a non-null
 reference value, including the warmup region.
 
+TradingView policy: Rust must match committed TradingView CSV exports for the
+declared indicator columns in `tests/fixtures/tradingview_expected/`. TradingView
+fixtures are evidence only; Pine scripts are not vendored into this crate.
+
 Regenerate fixtures (requires Python TA-Lib):
 
 ```bash
-python3 -m venv artifacts/venv-talib
-artifacts/venv-talib/bin/pip install TA-Lib numpy
-artifacts/venv-talib/bin/python scripts/gen_parity_fixtures.py
+uv run --with TA-Lib --with numpy scripts/gen_parity_fixtures.py
 cargo test
 ```
 
@@ -144,7 +178,9 @@ and combined min/max exports.
 ## Scope
 
 - Batch API only; this is not a streaming indicator engine.
-- Pure Rust implementation; Python TA-Lib is used only to regenerate parity fixtures.
+- Pure Rust implementation; Python TA-Lib is used only to regenerate TA-Lib parity fixtures.
+- TradingView formulas are separate from the TA-Lib root namespace and are
+  validated against committed CSV exports.
 - Candle patterns use TA-Lib's default candle settings and return TA-Lib-style
   integer signals (`0`, `±100`, `±200`).
 

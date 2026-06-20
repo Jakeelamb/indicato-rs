@@ -2,15 +2,15 @@
 """Generate deterministic TA-Lib parity fixtures for `ta-indicators`.
 
 This is the ground-truth contract for the Rust TA-Lib port. It builds a fixed
-synthetic OHLCV series (seeded, reproducible) and records reference outputs from
-the locally installed TA-Lib (`artifacts/venv-talib`) for every function we port.
+OHLCV series and records reference outputs from the UV-provided Python TA-Lib
+package for every function we port.
 
 The Rust integration tests under `tests/` load the emitted JSON and assert the
 Rust implementations match within tolerance.
 
-Run with the talib venv (it owns the compiled TA-Lib C extension):
+Run with UV:
 
-    artifacts/venv-talib/bin/python scripts/gen_parity_fixtures.py
+    uv run --with TA-Lib --with numpy scripts/gen_parity_fixtures.py
 
 Output: tests/fixtures/talib_parity.json
 """

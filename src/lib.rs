@@ -1,6 +1,6 @@
 //! Warmup-exact batch port of TA-Lib technical indicators for Rust.
 //!
-//! See crate README for module layout (`lib.rs` vs `candles.rs`) and parity policy.
+//! See crate README for module layout and parity policy.
 //!
 //! # Example
 //!
@@ -19,8 +19,13 @@
 //!
 //! Outputs use `Option<f64>` for numeric indicators. Warmup bars are `None`;
 //! emitted bars are matched against committed TA-Lib reference fixtures.
+//!
+//! TradingView CSV-validated families live under [`tradingview`]. They are
+//! intentionally namespaced separately because their reference oracle is
+//! TradingView export CSVs rather than TA-Lib.
 
 mod candles;
+pub mod tradingview;
 pub use candles::*;
 use std::collections::VecDeque;
 

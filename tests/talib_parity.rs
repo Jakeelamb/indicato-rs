@@ -13,7 +13,7 @@
 //! only when its fixture keys are registered here and the audit passes.
 //! Regenerate the fixture with:
 //!
-//!     artifacts/venv-talib/bin/python scripts/gen_parity_fixtures.py
+//!     uv run --with TA-Lib --with numpy scripts/gen_parity_fixtures.py
 
 use serde_json::Value;
 use ta_indicators as ta;
